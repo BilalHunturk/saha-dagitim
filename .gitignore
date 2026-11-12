@@ -43,3 +43,4 @@ next-env.d.ts
 
 # superpowers working files
 .superpowers/
+tests/e2e/screenshots/
