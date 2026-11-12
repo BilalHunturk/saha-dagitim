@@ -7,6 +7,9 @@ import { BaseMap } from "@/components/map/BaseMap";
 import { BasemapToggle, useStoredBasemap } from "@/components/map/BasemapToggle";
 import { polygonsBounds } from "@/lib/geo";
 import type { Zone } from "@/lib/types";
+import { zonesKey } from "@/lib/worker-refresh";
+import { LastUpdated, RefreshButton } from "./RefreshControls";
+import { useWorkerRefresh } from "./useWorkerRefresh";
 
 const FIT = { padding: 48, maxZoom: 17 } as const;
 
@@ -14,11 +17,19 @@ const FIT = { padding: 48, maxZoom: 17 } as const;
  * The worker's assigned zones on a full-height map, with a scrollable list underneath.
  * "Konumumu göster" uses MapLibre's GeolocateControl: the position only drives the dot on this
  * screen and is never sent anywhere.
+ *
+ * The data is re-read in place (useWorkerRefresh). A refresh that brings the same zones leaves
+ * the map view, basemap and selection alone; one that adds, removes or reshapes zones refits.
  */
-export function WorkerMap({ zones }: { zones: Zone[] }) {
+export function WorkerMap({ zones, fetchedAt }: { zones: Zone[]; fetchedAt: string }) {
   const [map, setMap] = useState<MapLibreMap | null>(null);
   const [basemap, setBasemap] = useStoredBasemap();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [chosenId, setSelectedId] = useState<string | null>(null);
+  // A selected zone that was withdrawn on refresh is simply no longer selected.
+  const selectedId = chosenId !== null && zones.some((z) => z.id === chosenId) ? chosenId : null;
+  const { refresh, pending, offline } = useWorkerRefresh();
+  const key = zonesKey(zones);
+  const fittedKey = useRef<string | null>(null);
   const [geoReady, setGeoReady] = useState(false);
   const [tracking, setTracking] = useState(false);
   const [geoError, setGeoError] = useState<string | null>(null);
@@ -42,6 +53,13 @@ export function WorkerMap({ zones }: { zones: Zone[] }) {
     const bounds = polygonsBounds(zonesRef.current.map((z) => z.geojson));
     if (bounds) m.fitBounds(bounds, { ...FIT, animate });
   }, []);
+
+  // Refit only when the set of zones or a shape changed (not on every refresh).
+  useEffect(() => {
+    if (!map) return;
+    if (fittedKey.current !== null && fittedKey.current !== key) fitAll(map, true);
+    fittedKey.current = key;
+  }, [map, key, fitAll]);
 
   const handleReady = useCallback(
     (m: MapLibreMap) => {
@@ -127,18 +145,24 @@ export function WorkerMap({ zones }: { zones: Zone[] }) {
       </BaseMap>
 
       <section aria-label="Bölgelerim" className="max-h-[40dvh] overflow-y-auto border-t border-zinc-200 bg-white">
-        <div className="sticky top-0 flex items-center gap-2 border-b border-zinc-100 bg-white px-4">
-          <h2 className="text-sm font-semibold text-zinc-800">Bölgelerim ({zones.length})</h2>
-          <button
-            type="button"
-            onClick={() => {
-              setSelectedId(null);
-              if (map) fitAll(map, true);
-            }}
-            className="ml-auto min-h-11 px-2 text-sm font-medium text-blue-700"
-          >
-            Tümünü göster
-          </button>
+        <div className="sticky top-0 flex items-center gap-1 border-b border-zinc-100 bg-white pr-2 pl-4">
+          <div className="min-w-0 py-1">
+            <h2 className="text-sm font-semibold text-zinc-800">Bölgelerim ({zones.length})</h2>
+            <LastUpdated fetchedAt={fetchedAt} offline={offline} />
+          </div>
+          <div className="ml-auto flex shrink-0 items-center">
+            <RefreshButton onClick={refresh} pending={pending} />
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedId(null);
+                if (map) fitAll(map, true);
+              }}
+              className="min-h-11 px-2 text-sm font-medium text-blue-700"
+            >
+              Tümünü göster
+            </button>
+          </div>
         </div>
         <ul className="divide-y divide-zinc-100">
           {zones.map((zone) => (

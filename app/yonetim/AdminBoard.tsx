@@ -14,12 +14,14 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import type { Map as MapLibreMap } from "maplibre-gl";
+import { useRouter } from "next/navigation";
 import { useCallback, useMemo, useOptimistic, useRef, useState, useTransition, type ReactNode } from "react";
 import { BaseMap } from "@/components/map/BaseMap";
 import { BasemapToggle, useStoredBasemap } from "@/components/map/BasemapToggle";
 import { applyAssignmentOp, resolveDrop, zonesOfWorker, type AssignmentOp, type DropIntent } from "@/lib/assignments";
+import { callAction } from "@/lib/call-action";
 import { polygonsBounds } from "@/lib/geo";
-import { LOGIN_MESSAGES } from "@/lib/login";
+import { refreshIfReachable } from "@/lib/safe-refresh";
 import type { Assignment, Profile, Zone } from "@/lib/types";
 import { AssignDialog, ZonePicker } from "./AssignDialog";
 import { assignWorker, moveWorker, unassignWorker } from "./assignment-actions";
@@ -49,6 +51,7 @@ type Tab = "zones" | "people";
 type Ask = Extract<DropIntent, { kind: "ask" }>;
 
 export function AdminBoard({ zones, people, assignments }: Props) {
+  const router = useRouter();
   const [map, setMap] = useState<MapLibreMap | null>(null);
   const [basemap, setBasemap] = useStoredBasemap();
   const [editor, setEditor] = useState<Editor>(null);
@@ -103,23 +106,21 @@ export function AdminBoard({ zones, people, assignments }: Props) {
         addOptimistic(op);
         // A rejected action (network drop, timeout, session check failed) must not reach the error
         // boundary, which would replace the whole board. It is shown like any other failure; the
-        // optimistic change is dropped when the transition ends.
-        let result: { ok: true } | { ok: false; error: string };
-        try {
-          result =
+        // optimistic change is dropped when the transition ends. The action may still have
+        // committed, so the board is re-read. A redirect (signed out, deactivated) is rethrown.
+        const result = await callAction(
+          () =>
             op.kind === "assign"
-              ? await assignWorker(op.workerId, op.zoneId)
+              ? assignWorker(op.workerId, op.zoneId)
               : op.kind === "unassign"
-                ? await unassignWorker(op.workerId, op.zoneId)
-                : await moveWorker(op.workerId, op.fromZoneId, op.toZoneId);
-        } catch (e) {
-          console.error("assignment action failed", e);
-          result = { ok: false, error: LOGIN_MESSAGES.CONNECTION };
-        }
+                ? unassignWorker(op.workerId, op.zoneId)
+                : moveWorker(op.workerId, op.fromZoneId, op.toZoneId),
+          () => void refreshIfReachable(router),
+        );
         if (!result.ok) setError(result.error);
       });
     },
-    [addOptimistic],
+    [addOptimistic, router],
   );
 
   const handleIntent = useCallback(

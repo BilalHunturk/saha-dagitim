@@ -1,5 +1,6 @@
 "use client";
 
+import { unstable_rethrow } from "next/navigation";
 import { useMemo, useState, useTransition, type FormEvent } from "react";
 import { formatPhone } from "@/lib/phone";
 import type { ActionResult } from "@/lib/people";
@@ -64,7 +65,8 @@ export function PeopleTable({ workers }: { workers: WorkerRow[] }) {
         }
         setMode({ kind: "idle" });
         onSuccess?.(result);
-      } catch {
+      } catch (e) {
+        unstable_rethrow(e); // a redirect from requireRole (signed out, deactivated) navigates
         setRowError({ id, message: UNEXPECTED_ERROR });
       }
     });

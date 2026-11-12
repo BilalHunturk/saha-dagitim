@@ -1,6 +1,7 @@
 // Browser check of the admin map (/yonetim): draw, persist, edit a vertex, switch basemap,
-// self-intersecting polygon error, a save whose action request fails (network drop), archive,
-// and layout at 1280px / 375px.
+// self-intersecting polygon error, a save whose action request fails (network drop), a save whose
+// response is lost and is retried (no duplicate zone), archive, and layout at 1280px / 375px.
+// Refuses to run unless NEXT_PUBLIC_SUPABASE_URL is local (tests/e2e/local-guard.mjs).
 //
 // Needs: local Supabase running, `next dev` on BASE_URL (default http://localhost:3100), the
 // local admin (LOCAL_ADMIN_PHONE / LOCAL_ADMIN_PASSWORD in .env.local) and Google Chrome.
@@ -11,8 +12,10 @@ import { createClient } from "@supabase/supabase-js";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "playwright";
+import { assertLocalSupabase } from "./local-guard.mjs";
 
 process.loadEnvFile(".env.local");
+assertLocalSupabase(process.env.NEXT_PUBLIC_SUPABASE_URL);
 const BASE = process.env.BASE_URL ?? "http://localhost:3100";
 const SHOTS = process.argv[2] ?? "tests/e2e/screenshots";
 mkdirSync(SHOTS, { recursive: true });
@@ -200,11 +203,33 @@ try {
     `drawn ${drawnBefore} -> ${await rendered(await drawLayers())}`,
   );
   await failActions(false);
-  // Retry once the connection is back.
+
+  // --- The save reaches the server and commits, but its response is lost ---------------------
+  let responseLost;
+  const lost = new Promise((r) => (responseLost = r));
+  const loseResponses = async (route) => {
+    if (!isAction(route)) return route.fallback();
+    await route.fetch(); // the server runs the action (the zone is stored)…
+    await route.abort("failed"); // …but the browser never sees the answer
+    responseLost();
+  };
+  await page.route(boardUrl, loseResponses);
+  await page.getByRole("button", { name: "Kaydet" }).click();
+  await lost;
+  await netAlert.waitFor({ timeout: 15000 });
+  await page.unroute(boardUrl, loseResponses);
+  let rows = await e2eZones();
+  check("lost response: the save committed once, the error is shown", rows.length === 1, `${rows.length} rows`);
+
+  // Retry once the connection is back: same zone id, so no duplicate.
   await page.getByRole("button", { name: "Kaydet" }).click();
   await page.locator("[data-zone-id]", { hasText: "E2E Kare" }).waitFor({ timeout: 15000 });
-  let rows = await e2eZones();
-  check("saved zone is in the database (retry after the failure)", rows.length === 1 && rows[0].name === "E2E Kare");
+  rows = await e2eZones();
+  check(
+    "retry after a lost response does not duplicate the zone",
+    rows.length === 1 && rows[0].name === "E2E Kare" && (await page.locator("[data-zone-id]", { hasText: "E2E Kare" }).count()) === 1,
+    `${rows.length} rows`,
+  );
   const zoneId = rows[0]?.id;
 
   await page.reload();

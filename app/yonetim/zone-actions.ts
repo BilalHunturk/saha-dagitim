@@ -25,11 +25,21 @@ const str = (value: unknown) => (typeof value === "string" ? value : "");
 function dbError(error: { message?: string }, fallback: string) {
   const message = error.message ?? "";
   if (!KNOWN_ERRORS.has(message)) console.error("zone action failed:", message);
+  // The zone was archived elsewhere: re-read the page so the stale card and polygon go away.
+  if (message === ZONE_GONE) revalidatePath("/yonetim");
   return { ok: false as const, error: KNOWN_ERRORS.has(message) ? message : fallback };
 }
 
+/** The "zone is gone" error: another tab or device archived it, so this board is stale. */
+const ZONE_GONE = "Bölge bulunamadı";
+
+/**
+ * Creates (`create: true`, under the client-generated `id`, so a retry after a lost response
+ * cannot make a duplicate) or updates the zone `id`.
+ */
 export async function saveZone(input: {
   id: string | null;
+  create?: boolean;
   name: string;
   color: string;
   note: string | null;
@@ -38,7 +48,8 @@ export async function saveZone(input: {
   await requireRole("admin");
 
   const id = input?.id ?? null;
-  if (id !== null && !UUID.test(str(id))) return { ok: false, error: "Bölge bulunamadı" };
+  const create = input?.create === true;
+  if (id !== null && !UUID.test(str(id))) return { ok: false, error: ZONE_GONE };
   const name = str(input?.name).trim();
   if (!name) return { ok: false, error: "Bölge adı gerekli" };
   const color = str(input?.color);
@@ -54,6 +65,7 @@ export async function saveZone(input: {
     p_color: color,
     p_note: note,
     p_geojson: polygon.polygon,
+    p_create: create,
   });
   if (error) return dbError(error, FAILED);
 
@@ -63,7 +75,7 @@ export async function saveZone(input: {
 
 export async function archiveZone(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
   await requireRole("admin");
-  if (!UUID.test(str(id))) return { ok: false, error: "Bölge bulunamadı" };
+  if (!UUID.test(str(id))) return { ok: false, error: ZONE_GONE };
 
   const supabase = await createClient();
   const { error } = await supabase.rpc("archive_zone", { p_id: id });

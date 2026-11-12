@@ -14,16 +14,22 @@ const isUuid = (value: unknown): value is string => typeof value === "string" &&
 
 const WORKER_MISSING = "Kişi bulunamadı ya da pasif";
 const ZONE_MISSING = "Bölge bulunamadı ya da arşivlenmiş";
+const NOT_IN_ZONE = "Kişi bu bölgede değil";
 const FAILED = "Atama kaydedilemedi, tekrar deneyin";
 
 /** Turkish messages raised by the SQL functions; anything else becomes a generic error. */
-const KNOWN_ERRORS = new Set(["Yetkisiz", WORKER_MISSING, ZONE_MISSING]);
+const KNOWN_ERRORS = new Set(["Yetkisiz", WORKER_MISSING, ZONE_MISSING, NOT_IN_ZONE]);
+
+/** Errors that mean this board is stale (changed on another tab or device). */
+const STALE_ERRORS = new Set([WORKER_MISSING, ZONE_MISSING, NOT_IN_ZONE]);
 
 async function call(fn: string, args: Record<string, string>): Promise<Result> {
   const supabase = await createClient();
   const { error } = await supabase.rpc(fn, args);
   if (error) {
     const message = error.message ?? "";
+    // Re-read the page so the stale card / chip is replaced by the current state.
+    if (STALE_ERRORS.has(message)) revalidatePath("/yonetim");
     if (KNOWN_ERRORS.has(message)) return { ok: false, error: message };
     console.error(`${fn} failed:`, message);
     return { ok: false, error: FAILED };

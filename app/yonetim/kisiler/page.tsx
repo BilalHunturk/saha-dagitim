@@ -1,4 +1,5 @@
 import { requireRole } from "@/lib/auth";
+import { fetchAll } from "@/lib/supabase/fetch-all";
 import { createClient } from "@/lib/supabase/server";
 import { AddPersonForm } from "./AddPersonForm";
 import { PeopleTable, type WorkerRow } from "./PeopleTable";
@@ -10,22 +11,31 @@ export default async function PeoplePage() {
   const supabase = await createClient();
 
   // Admin RLS: all profiles and assignments are readable. Admin rows are not listed.
-  const [{ data: profiles, error }, { data: assignments }] = await Promise.all([
-    supabase
-      .from("profiles")
-      .select("id, full_name, phone, active")
-      .eq("role", "worker")
-      .order("full_name"),
-    supabase.from("assignments").select("worker_id").is("ended_at", null),
+  // PostgREST caps each response at 1000 rows, so both lists are read page by page; each order
+  // ends on the unique `id`, so the pages are stable. A failed page fails the whole page load
+  // (error boundary) rather than showing wrong zone counts.
+  const [profiles, assignments] = await Promise.all([
+    fetchAll((from, to) =>
+      supabase
+        .from("profiles")
+        .select("id, full_name, phone, active")
+        .eq("role", "worker")
+        .order("full_name")
+        .order("id")
+        .range(from, to),
+    ),
+    fetchAll((from, to) =>
+      supabase.from("assignments").select("worker_id").is("ended_at", null).order("id").range(from, to),
+    ),
   ]);
-  if (error) throw new Error("Kişiler yüklenemedi");
+  if (profiles.error || assignments.error) throw new Error("Kişiler yüklenemedi");
 
   const zoneCounts = new Map<string, number>();
-  for (const a of assignments ?? []) {
+  for (const a of assignments.data) {
     zoneCounts.set(a.worker_id, (zoneCounts.get(a.worker_id) ?? 0) + 1);
   }
 
-  const workers: WorkerRow[] = (profiles ?? [])
+  const workers: WorkerRow[] = profiles.data
     .map((p) => ({
       id: p.id as string,
       fullName: p.full_name as string,

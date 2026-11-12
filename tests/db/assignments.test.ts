@@ -104,6 +104,31 @@ describe("move_worker", () => {
     expect(error).not.toBeNull();
     expect(await activeRows({ worker: w.id, zone: a })).toHaveLength(1);
   });
+
+  it("refuses a stale source: a worker not in p_from is not silently added to p_to", async () => {
+    // Tab 1 moved the worker A -> C; a stale tab 2 still shows them in A and drags A -> B.
+    const w = await makeUser("worker");
+    const a = await saveZone(admin, "Eski kaynak");
+    const b = await saveZone(admin, "Bayat hedef");
+    const c = await saveZone(admin, "Güncel");
+    await assign(w.id, a);
+    expect((await admin.client.rpc("move_worker", { p_worker: w.id, p_from: a, p_to: c })).error).toBeNull();
+
+    const { error } = await admin.client.rpc("move_worker", { p_worker: w.id, p_from: a, p_to: b });
+    expect(error?.message).toBe("Kişi bu bölgede değil");
+    expect(await activeRows({ worker: w.id })).toEqual([{ worker_id: w.id, zone_id: c, ended_at: null }]);
+  });
+
+  it("is a no-op when the same move is retried (e.g. after a lost response)", async () => {
+    const w = await makeUser("worker");
+    const a = await saveZone(admin, "Tekrar kaynak");
+    const b = await saveZone(admin, "Tekrar hedef");
+    await assign(w.id, a);
+    const move = () => admin.client.rpc("move_worker", { p_worker: w.id, p_from: a, p_to: b });
+    expect((await move()).error).toBeNull();
+    expect((await move()).error).toBeNull();
+    expect(await activeRows({ worker: w.id })).toEqual([{ worker_id: w.id, zone_id: b, ended_at: null }]);
+  });
 });
 
 describe("unassign_worker", () => {

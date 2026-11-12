@@ -1,5 +1,17 @@
+import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { anonClient, cleanup, makeUser, saveZone, setActive, SQUARE, type TestUser } from "./helpers";
+import { phoneToEmail } from "@/lib/phone";
+import {
+  anonClient,
+  cleanup,
+  makeUser,
+  randomPhone,
+  saveZone,
+  setActive,
+  SQUARE,
+  trackUser,
+  type TestUser,
+} from "./helpers";
 
 let admin: TestUser;
 let w1: TestUser;
@@ -150,6 +162,16 @@ describe("RLS: signed-out client", () => {
     const anon = anonClient();
     const { error } = await anon.rpc("assign_worker", { p_worker: w1.id, p_zone: zoneB });
     expect(error).not.toBeNull();
+  });
+
+  it("cannot sign up with the public anon key (only the service-role admin API creates users)", async () => {
+    const anon = anonClient();
+    const email = phoneToEmail(randomPhone());
+    const { data, error } = await anon.auth.signUp({ email, password: randomBytes(12).toString("base64url") });
+    if (data.user) trackUser(data.user.id); // so a failing run still cleans up
+    expect(error?.code).toBe("signup_disabled");
+    expect(data.user).toBeNull();
+    expect(data.session).toBeNull();
   });
 });
 

@@ -5,8 +5,10 @@
 
 import { createClient } from "@supabase/supabase-js";
 import { normalizePhone, phoneToEmail } from "../../lib/phone.ts";
+import { assertLocalSupabase } from "./local-guard.mjs";
 
 process.loadEnvFile(".env.local");
+assertLocalSupabase(process.env.NEXT_PUBLIC_SUPABASE_URL);
 
 const SAMPLE_ZONES = [
   {

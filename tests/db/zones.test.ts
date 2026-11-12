@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BOWTIE, cleanup, makeUser, service, SQUARE, type TestUser } from "./helpers";
 
@@ -74,6 +75,41 @@ describe("save_zone", () => {
   it("errors when updating an id that does not exist", async () => {
     const { error } = await save({ id: "00000000-0000-0000-0000-000000000000", name: "Yok" });
     expect(error).not.toBeNull();
+  });
+
+  it("creates with a client-supplied id, and a retried create does not duplicate the zone", async () => {
+    const id = randomUUID();
+    const create = (name: string) =>
+      admin.client.rpc("save_zone", {
+        p_id: id,
+        p_name: name,
+        p_color: "#e11d48",
+        p_note: null,
+        p_geojson: SQUARE,
+        p_create: true,
+      });
+
+    const first = await create("Tekrar");
+    expect(first.error).toBeNull();
+    expect(first.data).toBe(id);
+    // The response was lost and the admin pressed Kaydet again (maybe after changing the name).
+    const retry = await create("Tekrar 2");
+    expect(retry.error).toBeNull();
+    expect(retry.data).toBe(id);
+
+    const { data: rows } = await service.from("zones").select("id, name, created_by").eq("id", id);
+    expect(rows).toEqual([{ id, name: "Tekrar 2", created_by: admin.id }]);
+  });
+
+  it("does not revive an archived zone through a retried create", async () => {
+    const id = randomUUID();
+    const args = { p_id: id, p_name: "Arşiv", p_color: "#e11d48", p_note: null, p_geojson: SQUARE, p_create: true };
+    expect((await admin.client.rpc("save_zone", args)).error).toBeNull();
+    expect((await admin.client.rpc("archive_zone", { p_id: id })).error).toBeNull();
+    const retry = await admin.client.rpc("save_zone", args);
+    expect(retry.error?.message).toBe("Bölge bulunamadı");
+    const { data: zone } = await service.from("zones").select("archived_at").eq("id", id).single();
+    expect(zone!.archived_at).not.toBeNull();
   });
 });
 

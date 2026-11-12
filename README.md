@@ -30,7 +30,12 @@ bölgeler arşivlenir, atamalar sonlandırılır, kişiler pasifleştirilir.
 - `/yonetim/kisiler` (yönetici): dağıtıcı ekleme (üretilen şifre yalnızca bir kez gösterilir),
   düzenleme, pasifleştirme, şifre yenileme.
 - `/gorevim` (dağıtıcı): atandığı bölgeler haritada ve altta liste halinde. Atama yoksa
-  "Henüz görev atanmadı" yazar.
+  "Henüz görev atanmadı" yazar. Ekran kendini yeniler: uygulama öne geldiğinde, bağlantı geri
+  geldiğinde ve açıkken dakikada bir. Elle yenilemek için "Yenile" düğmesi, verinin ne zaman
+  okunduğunu gösteren "Son güncelleme: SS:DD" satırı vardır (saat Türkiye saatidir). Bölgeler
+  değişmediyse harita görünümü ve altlık yerinde kalır; değiştiyse harita yeni bölgelere
+  sığdırılır. Bağlantı yoksa ekran eldeki veriyi gösterir ve "Bağlantı yok" yazar. Pasifleştirilen
+  dağıtıcı bir sonraki yenilemede giriş sayfasına yönlendirilir.
 
 Dağıtıcı başka kimsenin atamasını veya kişi listesini göremez; bu kural veritabanında RLS ile
 uygulanır. Uygulama içinden yalnızca dağıtıcı eklenebilir; yönetici hesabı aşağıdaki
@@ -71,7 +76,15 @@ npx supabase migration list
    Daha sonra yeni bir göç eklenirse, mevcut verilere dokunmadan uygulamak için:
 
 ```bash
-npx supabase db push
+npx supabase migration up
+```
+
+   `supabase/config.toml` değişirse (örneğin herkese açık kayıt kapatıldığında) ayar ancak
+   yeniden başlatınca geçerli olur. `stop` verileri silmez; ardından 2. adımdaki `start`
+   komutunu aynen çalıştırın:
+
+```bash
+npx supabase stop
 ```
 
    Yerel veritabanını sıfırdan kurmak gerekirse aşağıdaki komut tüm verileri siler (yerel
@@ -138,7 +151,7 @@ npx supabase stop
 | Komut | Ne test eder | Gerekenler |
 |---|---|---|
 | `npm test` | Birim testleri (Vitest, `lib/*.test.ts`): telefon normalleştirme, şifre üretimi, GeoJSON doğrulama, giriş hata mesajları, rol yönlendirme, atama ekranının iyimser güncelleme mantığı. | Hiçbir şey |
-| `npm run test:db` | Yerel Supabase'e karşı bütünleşik testler (`tests/db/`): RLS (dağıtıcı başkasının verisini göremez, pasif kullanıcı hiçbir şey göremez), `save_zone` / `archive_zone`, `assign_worker` / `move_worker` / `unassign_worker`, kişi ekleme/düzenleme/pasifleştirme/şifre yenileme. | Çalışan yerel Supabase ve `.env.local` |
+| `npm run test:db` | Yerel Supabase'e karşı bütünleşik testler (`tests/db/`): RLS (dağıtıcı başkasının verisini göremez, pasif kullanıcı hiçbir şey göremez), anon anahtarıyla kayıt olunamaz, `save_zone` (tekrarlanan kaydetme kopya bölge açmaz) / `archive_zone`, `assign_worker` / `move_worker` (bayat kaynakla taşıma reddedilir) / `unassign_worker`, kişi ekleme/düzenleme/pasifleştirme/şifre yenileme. | Çalışan yerel Supabase ve `.env.local` |
 | `npm run typecheck` | `next typegen` + `tsc --noEmit` | Hiçbir şey |
 | `npm run lint` | ESLint | Hiçbir şey |
 | `npm run build` | Üretim derlemesi | `.env.local` (veya ortam değişkenleri) |
@@ -163,13 +176,15 @@ node tests/e2e/worker.mjs
 ```
 
 - `admin-map.mjs`: `/yonetim` haritası: çizim, kaydetme, köşe düzenleme, altlık geçişi,
-  kendini kesen çokgen hatası, bağlantı koptuğunda kaydetme, arşivleme, 1280px ve 375px düzen.
-- `assignments.mjs`: sürükle-bırak atama, taşıma, kaldırma, geri alma. Üç örnek bölgeyi
-  (`seed-sample-zones.mjs`) ister; yoksa 8 örnek dağıtıcıyı (`+90501000000x`) uygulamanın
-  Kişiler sayfasından kendisi ekler.
-- `worker.mjs`: `/gorevim` ekranı (375x812) ve PWA dosyaları. İki geçici dağıtıcı oluşturur,
-  sonunda siler. Service worker kontrolleri yalnızca `PROD_URL` (bir üretim derlemesinin
-  `next start` adresi) verilirse çalışır.
+  kendini kesen çokgen hatası, bağlantı koptuğunda kaydetme, yanıtı kaybolan kaydetmenin
+  tekrarı (kopya bölge açılmaz), arşivleme, 1280px ve 375px düzen.
+- `assignments.mjs`: sürükle-bırak atama, taşıma, kaldırma, geri alma, başka sekmede değişmiş
+  (bayat) pano. Üç örnek bölgeyi (`seed-sample-zones.mjs`) ister; yoksa 8 örnek dağıtıcıyı
+  (`+90501000000x`) uygulamanın Kişiler sayfasından kendisi ekler.
+- `worker.mjs`: `/gorevim` ekranı (375x812), kendiliğinden yenileme (sayfa açıkken atama
+  değiştirilir, sayfanın öne gelmesi taklit edilir) ve PWA dosyaları. İki geçici dağıtıcı
+  oluşturur, sonunda siler. Service worker kontrolleri yalnızca `PROD_URL` (bir üretim
+  derlemesinin `next start` adresi) verilirse çalışır.
 
 Üçü de şunları ister: çalışan yerel Supabase, `BASE_URL` adresinde çalışan bir `next dev`
 (varsayılan `http://localhost:3100`), kurulu Google Chrome (`E2E_CHANNEL` ile başka bir
@@ -181,10 +196,11 @@ Playwright kanalı seçilebilir). İlk ikisi `.env.local`'da `LOCAL_ADMIN_PHONE`
 npx next dev -p 3100
 ```
 
-Ekran görüntüleri `tests/e2e/screenshots/` altına yazılır (git'e girmez). Dikkat: e2e betikleri
-`.env.local`'daki service role anahtarıyla kendi oluşturdukları kayıtları kalıcı olarak siler
-ve `test:db` gibi yerel adres kontrolü yapmaz. Yalnızca `.env.local` yerel Supabase'i
-gösterirken çalıştırın.
+Ekran görüntüleri `tests/e2e/screenshots/` altına yazılır (git'e girmez). e2e betikleri
+`.env.local`'daki service role anahtarıyla kendi oluşturdukları kayıtları kalıcı olarak siler.
+Bu yüzden `test:db` gibi onlar da (ve `seed-sample-zones.mjs`) `NEXT_PUBLIC_SUPABASE_URL`
+adresinin sunucusu `localhost` veya `127.0.0.1` değilse hiçbir şey yapmadan çıkar
+(`tests/e2e/local-guard.mjs`).
 
 ## Üretim kurulumu (Supabase + Vercel)
 
@@ -230,11 +246,15 @@ Uygulama telefon numarasını sentetik bir e-postaya çevirir (`+905321234567` -
 adreslere hiçbir zaman e-posta gönderilmez. Panelde Authentication bölümünde:
 
 - **Email sağlayıcısı açık olmalı.** Giriş `signInWithPassword` (e-posta + şifre) ile yapılır.
-- **Yeni kayıtları kapatın** ("Allow new users to sign up" kapalı). Kullanıcıları yalnızca
-  yönetici oluşturur: hem uygulama hem `create-admin` betiği service role ile
-  `auth.admin.createUser` çağırır, bu ayar onları etkilemez. Açık bırakılırsa anon anahtarı
-  bilen biri kendine hesap açabilir (profili olmadığı için hiçbir veri göremez, ama gereksiz
-  bir kapıdır).
+- **Yeni kayıtları kapatın (zorunlu):** Authentication > Sign In / Providers altında
+  "Allow new users to sign up" kapalı olmalı. Yereldeki karşılığı `supabase/config.toml`'daki
+  `[auth] enable_signup = false` ayarıdır; üretim projesi bu dosyayı okumaz, panelden ayrıca
+  kapatılmalıdır. Kullanıcıları yalnızca yönetici oluşturur: hem uygulama hem `create-admin`
+  betiği service role ile `auth.admin.createUser` çağırır, bu ayar onları etkilemez ve bu
+  kullanıcılar normal şekilde giriş yapar. Açık bırakılırsa anon anahtarını (tarayıcıdaki
+  JavaScript'te herkese açıktır) bilen biri istediği telefon numarasıyla hesap açabilir: profili
+  olmadığı için veri göremez, ama o numara uygulamada "zaten kayıtlı" görünür ve gerçek kişi
+  eklenemez.
 - **E-posta doğrulaması ("Confirm email"):** kod buna dayanmaz. Kullanıcılar
   `email_confirm: true` ile, yani doğrulanmış olarak oluşturulur; telefon değişikliğinde
   e-posta da aynı şekilde doğrulanmış olarak güncellenir. Ayar açık da kapalı da olsa bu
@@ -267,7 +287,10 @@ yeniden deploy etmek gerekir.
 `create-admin` betiği hedefi iki değişkenden alır: `NEXT_PUBLIC_SUPABASE_URL` ve
 `SUPABASE_SERVICE_ROLE_KEY`. Önce kabuktaki ortam değişkenlerine bakar; kabukta tanımlı
 olmayanları çalıştırıldığı dizindeki `.env.local` dosyasından okur. Kabukta tanımlı değer
-`.env.local`'dakini ezer. Betik hangi projeye yazdığını sormaz ve göstermez.
+`.env.local`'dakini ezer. Betik bir şey yazmadan önce hedefin sunucu adını yazar (anahtarı
+asla yazmaz), örneğin `Hedef Supabase: <ref>.supabase.co (YEREL DEĞİL, örneğin üretim)` ya da
+`Hedef Supabase: 127.0.0.1:54321 (yerel)`. Onay sormaz; yanlış hedefse hemen Ctrl+C ile
+durdurun ve oluşan kişiyi kontrol edin.
 
 Üretim için iki değişkeni de komutla birlikte verin (yalnızca birini verirseniz diğeri
 `.env.local`'dan, yani yerelden gelir):

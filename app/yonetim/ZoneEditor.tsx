@@ -1,11 +1,14 @@
 "use client";
 
 import type { Map as MapLibreMap } from "maplibre-gl";
+import { useRouter } from "next/navigation";
 import type { HexColor, TerraDraw, TerraDrawPolygonMode, TerraDrawSelectMode } from "terra-draw";
 import { useEffect, useRef, useState, useTransition } from "react";
+import { callAction } from "@/lib/call-action";
 import { validatePolygon } from "@/lib/geo";
-import { LOGIN_MESSAGES } from "@/lib/login";
+import { refreshIfReachable } from "@/lib/safe-refresh";
 import type { Zone } from "@/lib/types";
+import { newUuid } from "@/lib/uuid";
 import { archiveZone, saveZone } from "./zone-actions";
 
 export const ZONE_COLORS = [
@@ -70,20 +73,6 @@ function selectStyles(color: HexColor) {
 }
 
 /**
- * Runs a server action and turns a rejection (network drop, timeout, session check failed) into an
- * ordinary `{ ok: false }` result. Uncaught, it would reach the error boundary, which replaces the
- * board and loses the drawing and the form.
- */
-async function callAction<R extends { ok: boolean }>(action: () => Promise<R>): Promise<R | { ok: false; error: string }> {
-  try {
-    return await action();
-  } catch (e) {
-    console.error("zone action failed", e);
-    return { ok: false, error: LOGIN_MESSAGES.CONNECTION };
-  }
-}
-
-/**
  * Side-panel form plus the terra-draw session for one zone. terra-draw lives exactly as long as
  * this component: it starts on mount and `stop()` (which also removes its map layers) on unmount.
  *
@@ -92,9 +81,14 @@ async function callAction<R extends { ok: boolean }>(action: () => Promise<R>): 
  * - edit: the zone's polygon is added to the terra-draw store under the zone id and selected.
  *
  * On a failed save the feature stays in the store, so the drawing stays on screen.
+ * A new zone gets its id here, once per editor session, and every Kaydet attempt sends the same
+ * id: if a save committed but its response was lost, the retry updates that zone instead of
+ * creating a second one.
  */
 export function ZoneEditor({ map, target, onClose }: Props) {
   const editing = target.kind === "edit" ? target.zone : null;
+  const router = useRouter();
+  const [newZoneId] = useState(newUuid);
   const drawRef = useRef<TerraDraw | null>(null);
   const [featureId, setFeatureId] = useState<string | null>(editing?.id ?? null);
   const [name, setName] = useState(editing?.name ?? "");
@@ -199,14 +193,18 @@ export function ZoneEditor({ map, target, onClose }: Props) {
       return;
     }
     startTransition(async () => {
-      const result = await callAction(() =>
-        saveZone({
-          id: editing?.id ?? null,
-          name,
-          color,
-          note: note.trim() || null,
-          geojson: polygon.polygon,
-        }),
+      // On a rejection the save may still have committed: re-read the board (the editor stays).
+      const result = await callAction(
+        () =>
+          saveZone({
+            id: editing?.id ?? newZoneId,
+            create: !editing,
+            name,
+            color,
+            note: note.trim() || null,
+            geojson: polygon.polygon,
+          }),
+        () => void refreshIfReachable(router),
       );
       if (result.ok) onClose(result.id);
       else setError(result.error);
@@ -217,7 +215,10 @@ export function ZoneEditor({ map, target, onClose }: Props) {
     if (!editing) return;
     setError(null);
     startTransition(async () => {
-      const result = await callAction(() => archiveZone(editing.id));
+      const result = await callAction(
+        () => archiveZone(editing.id),
+        () => void refreshIfReachable(router),
+      );
       if (result.ok) onClose(null);
       else {
         setConfirmArchive(false);

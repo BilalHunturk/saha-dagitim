@@ -28,6 +28,16 @@ const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 if (!url || !serviceKey) fail("NEXT_PUBLIC_SUPABASE_URL ve SUPABASE_SERVICE_ROLE_KEY tanımlı olmalı.");
 
+// Show where this is going (host only, never keys) before anything is written.
+let host;
+try {
+  host = new URL(url).host;
+} catch {
+  fail("NEXT_PUBLIC_SUPABASE_URL geçerli bir adres değil.");
+}
+const local = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host);
+console.log(`Hedef Supabase: ${host} (${local ? "yerel" : "YEREL DEĞİL, örneğin üretim"})`);
+
 const supabase = createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
 
 const { data: existing, error: lookupError } = await supabase.from("profiles").select("id").eq("phone", phone).maybeSingle();

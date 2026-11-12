@@ -1,5 +1,6 @@
 "use client";
 
+import { unstable_rethrow } from "next/navigation";
 import { useState, useTransition, type FormEvent } from "react";
 import { createWorker } from "./actions";
 
@@ -32,7 +33,8 @@ export function AddPersonForm() {
         }
         form.reset();
         setCreated({ name: fullName.trim(), password: result.password ?? "" });
-      } catch {
+      } catch (e) {
+        unstable_rethrow(e); // a redirect from requireRole (signed out, deactivated) navigates
         setError(UNEXPECTED_ERROR);
       }
     });

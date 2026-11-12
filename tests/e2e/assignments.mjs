@@ -14,8 +14,10 @@ import { createClient } from "@supabase/supabase-js";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "playwright";
+import { assertLocalSupabase } from "./local-guard.mjs";
 
 process.loadEnvFile(".env.local");
+assertLocalSupabase(process.env.NEXT_PUBLIC_SUPABASE_URL);
 const BASE = process.env.BASE_URL ?? "http://localhost:3100";
 const SHOTS = process.argv[2] ?? "tests/e2e/screenshots";
 mkdirSync(SHOTS, { recursive: true });
@@ -375,7 +377,27 @@ try {
       (await row(mehmet).textContent()).includes("Atanmadı"),
     `optimistic chip seen=${sawOptimistic}`,
   );
+  await card(tmp.id).waitFor({ state: "detached", timeout: 10000 }).catch(() => undefined);
+  check("failed action on an archived zone re-reads the board (stale card gone)", (await card(tmp.id).count()) === 0);
   await cleanupTempZone();
+
+  // --- 7a. Stale board: the worker was moved elsewhere behind the page's back ---------------------
+  // Fatma is in Bahçelievler on this board; another device moves her to Kızılay. Dragging her chip
+  // from Bahçelievler to Çankaya must not add her to Çankaya; the board shows the real state.
+  await service.from("assignments").update({ ended_at: new Date().toISOString() }).eq("worker_id", fatma).is("ended_at", null);
+  await service.from("assignments").insert({ zone_id: kizilay, worker_id: fatma });
+  await card(bahce).scrollIntoViewIfNeeded();
+  await drag(await center(chip(bahce, fatma).locator("span").first()), await center(card(cankaya)));
+  await page.locator("[role=alert]", { hasText: "Kişi bu bölgede değil" }).waitFor({ timeout: 10000 });
+  await chip(kizilay, fatma).waitFor({ timeout: 10000 });
+  await page.waitForTimeout(500);
+  check(
+    "stale move: error shown, not added to the target, board re-read",
+    JSON.stringify(await activeZonesOf(fatma)) === JSON.stringify([kizilay]) &&
+      (await chip(bahce, fatma).count()) === 0 &&
+      (await chip(cankaya, fatma).count()) === 0,
+  );
+  await page.getByRole("button", { name: "Hata iletisini kapat" }).click();
 
   // --- 7b. A failed action request (network drop) during an in-progress drawing ---------------------
   // The board must stay (no error page), the strip must say so, the optimistic chip must roll back,

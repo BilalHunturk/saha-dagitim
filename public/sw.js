@@ -1,6 +1,8 @@
 // Minimal service worker: makes the app installable and serves static assets cache-first.
 // Pages (HTML), RSC/Server Action requests, Supabase and map tiles always go to the network,
-// so a worker never sees a stale assignment. Bump CACHE to drop old assets.
+// so this cache never holds an assignment. (The open /gorevim page itself re-reads its data when
+// it returns to the foreground and every minute; see app/gorevim/useWorkerRefresh.ts.)
+// Bump CACHE to drop old assets.
 const CACHE = "saha-static-v1";
 
 self.addEventListener("install", () => {

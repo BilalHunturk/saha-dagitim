@@ -8,14 +8,18 @@
 // It creates two temporary workers with the service role (+905009999911 assigned to two existing
 // zones, +905009999912 with no assignment), signs in with a random password that is never
 // printed, and hard-deletes both workers and their assignments at the end. Zones and other
-// people's assignments are only read.
+// people's assignments are only read. While a worker page is open it also ends and re-adds one of
+// that temporary worker's assignments, to check that the screen refreshes itself.
+// Refuses to run unless NEXT_PUBLIC_SUPABASE_URL is local (tests/e2e/local-guard.mjs).
 
 import { createClient } from "@supabase/supabase-js";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "playwright";
+import { assertLocalSupabase } from "./local-guard.mjs";
 
 process.loadEnvFile(".env.local");
+assertLocalSupabase(process.env.NEXT_PUBLIC_SUPABASE_URL);
 const BASE = process.env.BASE_URL ?? "http://localhost:3100";
 const PROD = process.env.PROD_URL ?? null;
 const SHOTS = process.argv[2] ?? "tests/e2e/screenshots";
@@ -289,6 +293,112 @@ try {
     await context.close();
   }
 
+  // --- Assigned worker: the open screen picks up assignment changes without a reload ----------
+  {
+    const { context, page } = await newPage(BASE);
+    await signIn(page, BASE, ASSIGNED);
+    await page.locator("[data-zone-id]").first().waitFor();
+    await waitMapIdle(page);
+    const yenile = page.getByRole("button", { name: "Yenile", exact: true });
+    const listText = () => page.locator("section[aria-label='Bölgelerim']").innerText();
+    check(
+      "shows 'Son güncelleme: HH:MM' and a Yenile button",
+      /Son güncelleme: \d{2}:\d{2}/.test(await listText()) && (await yenile.isVisible()),
+    );
+    const listedIds = () => page.locator("[data-zone-id]").evaluateAll((els) => els.map((e) => e.dataset.zoneId));
+    const settle = async () => {
+      await page.waitForFunction(() => !window.__sahaMap.isMoving(), null, { timeout: 10000 });
+      await page.waitForTimeout(300);
+      await page.waitForFunction(() => !window.__sahaMap.isMoving(), null, { timeout: 10000 });
+    };
+    const view = () => page.evaluate(() => ({ zoom: window.__sahaMap.getZoom(), c: window.__sahaMap.getCenter().toArray() }));
+    const streetsVisible = () =>
+      page.evaluate(() => window.__sahaMap.getLayoutProperty("basemap-streets", "visibility") === "visible");
+    const refreshResponse = () =>
+      page.waitForResponse(
+        (r) => new URL(r.url()).pathname === "/gorevim" && r.request().method() === "GET" && !!r.request().headers()["rsc"],
+        { timeout: 15000 },
+      );
+
+    // Move the view and switch the basemap, then refresh with nothing changed: both must stay.
+    await page.getByRole("radio", { name: "Sokak" }).click();
+    await waitMapIdle(page);
+    await page.locator(`[data-zone-id="${zones[0].id}"]`).click();
+    await settle();
+    const before = await view();
+    await page.evaluate(() => (window.__noReload = true));
+    const same = refreshResponse();
+    await yenile.click();
+    await same;
+    await yenile.waitFor(); // label is back from "Yenileniyor…"
+    await page.waitForTimeout(500);
+    const after = await view();
+    check(
+      "Yenile with no change keeps the map view",
+      Math.abs(after.zoom - before.zoom) < 1e-6 &&
+        Math.abs(after.c[0] - before.c[0]) < 1e-9 &&
+        Math.abs(after.c[1] - before.c[1]) < 1e-9,
+      `zoom ${before.zoom.toFixed(3)} -> ${after.zoom.toFixed(3)}`,
+    );
+    check("Yenile with no change keeps the basemap (Sokak)", await streetsVisible());
+    check(
+      "Yenile with no change keeps the selected zone",
+      (await page.locator(`[data-zone-id="${zones[0].id}"]`).getAttribute("aria-current")) === "true",
+    );
+
+    // The manager withdraws zone 0 while the screen is open; the app comes back to the foreground.
+    await page.waitForTimeout(3500); // past the burst guard after the Yenile click
+    const { error: endErr } = await service
+      .from("assignments")
+      .update({ ended_at: new Date().toISOString() })
+      .eq("worker_id", assignedId)
+      .eq("zone_id", zones[0].id)
+      .is("ended_at", null);
+    if (endErr) throw endErr;
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await page.waitForFunction(() => document.querySelectorAll("[data-zone-id]").length === 1, null, { timeout: 15000 });
+    await settle();
+    const remaining = await listedIds();
+    check(
+      "visibilitychange: withdrawn zone disappears from the list without navigation",
+      remaining.length === 1 && remaining[0] === zones[1].id && page.url() === `${BASE}/gorevim` &&
+        (await page.evaluate(() => window.__noReload === true)),
+      JSON.stringify(remaining),
+    );
+    const drawn = await page.evaluate(() => [
+      ...new Set(window.__sahaMap.queryRenderedFeatures({ layers: ["zones-fill"] }).map((f) => f.properties.id)),
+    ]);
+    check("visibilitychange: the map layer drops the withdrawn zone", !drawn.includes(zones[0].id), JSON.stringify(drawn));
+    check("visibilitychange: the map refits to the remaining zone", await mapContains(page, [zones[1].geojson]));
+    check("visibilitychange: the basemap stays Sokak", await streetsVisible());
+    await page.screenshot({ path: join(SHOTS, "w08-refreshed.png") });
+
+    // The assignment comes back; the device reports it is online again.
+    await page.waitForTimeout(3500);
+    const { error: reErr } = await service.from("assignments").insert({ zone_id: zones[0].id, worker_id: assignedId });
+    if (reErr) throw reErr;
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await page.waitForFunction(() => document.querySelectorAll("[data-zone-id]").length === 2, null, { timeout: 15000 });
+    await settle();
+    check(
+      "online: a new assignment appears without navigation, and the map fits both zones",
+      (await page.evaluate(() => window.__noReload === true)) && (await mapContains(page, zones.map((z) => z.geojson))),
+    );
+    check("no horizontal scroll with the refresh controls", await noHorizontalScroll(page));
+
+    // No connection: Yenile keeps the screen (no full-page fallback) and says so.
+    await page.waitForTimeout(3500);
+    await context.setOffline(true);
+    await yenile.click();
+    await page.getByText("Bağlantı yok").waitFor({ timeout: 10000 });
+    check(
+      "offline: Yenile keeps the zones on screen and shows 'Bağlantı yok'",
+      (await page.locator("[data-zone-id]").count()) === 2 && (await page.evaluate(() => window.__noReload === true)),
+    );
+    await context.setOffline(false);
+    await context.close();
+  }
+
   // --- Unassigned worker: empty state -------------------------------------------------------
   {
     const { context, page } = await newPage(BASE);
@@ -297,6 +407,11 @@ try {
     await empty.waitFor({ timeout: 10000 });
     check("unassigned worker sees the empty-state message", await empty.isVisible());
     check("empty state: no map, no list", (await page.locator(".maplibregl-map, [data-zone-id]").count()) === 0);
+    check(
+      "empty state: shows 'Son güncelleme' and a Yenile button",
+      /Son güncelleme: \d{2}:\d{2}/.test(await page.locator("main").innerText()) &&
+        (await page.getByRole("button", { name: "Yenile", exact: true }).isVisible()),
+    );
     check("empty state: no horizontal scroll", await noHorizontalScroll(page));
     await page.screenshot({ path: join(SHOTS, "w06-empty.png") });
     await context.close();
