@@ -11,6 +11,26 @@ if (!URL || !ANON_KEY || !SERVICE_KEY) {
   throw new Error("DB tests need NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY in .env.local");
 }
 
+// Safety: these tests create and delete users with the service role. Refuse to run against
+// anything but the local stack, before any client exists.
+assertLocalSupabase(URL);
+
+/** Throws unless `url` points at a local Supabase (host localhost or 127.0.0.1). */
+export function assertLocalSupabase(url: string): void {
+  let host: string;
+  try {
+    host = new globalThis.URL(url).hostname;
+  } catch {
+    throw new Error(`DB tests refused: NEXT_PUBLIC_SUPABASE_URL is not a valid URL`);
+  }
+  if (host !== "localhost" && host !== "127.0.0.1") {
+    throw new Error(
+      `DB tests refused: NEXT_PUBLIC_SUPABASE_URL host is "${host}", expected localhost or 127.0.0.1. ` +
+        "DB tests only run against the local Supabase stack (npx supabase start).",
+    );
+  }
+}
+
 const noSession = { auth: { persistSession: false, autoRefreshToken: false } };
 
 /** Service-role client: bypasses RLS. Test setup/cleanup only. */
@@ -31,7 +51,12 @@ export interface TestUser {
 
 const createdUserIds: string[] = [];
 
-function randomPhone(): string {
+/** Registers a user created outside makeUser (e.g. by app code) so cleanup() removes it. */
+export function trackUser(id: string): void {
+  createdUserIds.push(id);
+}
+
+export function randomPhone(): string {
   let digits = "";
   for (let i = 0; i < 9; i++) digits += randomInt(0, 10);
   return `+905${digits}`;
