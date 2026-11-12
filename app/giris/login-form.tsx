@@ -1,10 +1,36 @@
 "use client";
 
 import { useActionState } from "react";
-import { login } from "./actions";
+import { LOGIN_MESSAGES, parseLoginForm, signInErrorMessage } from "@/lib/login";
+import { createClient } from "@/lib/supabase/client";
+import { completeLogin } from "./actions";
+
+type LoginState = { error?: string };
+
+/**
+ * Signs in from the browser, so the auth server rate-limits by the user's own IP rather
+ * than the app server's. The browser client stores the session in cookies; completeLogin
+ * then checks the profile on the server and redirects by role.
+ */
+async function signIn(_prev: LoginState, formData: FormData): Promise<LoginState> {
+  const parsed = parseLoginForm(
+    String(formData.get("phone") ?? ""),
+    String(formData.get("password") ?? ""),
+  );
+  if ("error" in parsed) return parsed;
+
+  try {
+    const { error } = await createClient().auth.signInWithPassword(parsed);
+    if (error) return { error: signInErrorMessage(error) };
+  } catch {
+    return { error: LOGIN_MESSAGES.CONNECTION };
+  }
+
+  return completeLogin();
+}
 
 export function LoginForm({ initialError }: { initialError?: string }) {
-  const [state, formAction, pending] = useActionState(login, { error: initialError });
+  const [state, formAction, pending] = useActionState(signIn, { error: initialError });
 
   return (
     <form action={formAction} className="flex flex-col gap-4">

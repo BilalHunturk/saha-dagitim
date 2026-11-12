@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { isTransientAuthError } from "@/lib/login";
 
 const PROTECTED = ["/yonetim", "/gorevim"];
 
@@ -33,11 +34,12 @@ export async function proxy(request: NextRequest) {
   );
 
   // Must run before anything else so a refreshed token reaches the response.
-  const { data } = await supabase.auth.getClaims();
+  const { data, error } = await supabase.auth.getClaims();
 
   const { pathname } = request.nextUrl;
   const isProtected = PROTECTED.some((p) => pathname === p || pathname.startsWith(`${p}/`));
-  if (!data?.claims && isProtected) {
+  // A transient auth error is not "signed out": let the layout guard decide (it shows a retry).
+  if (!data?.claims && isProtected && !isTransientAuthError(error)) {
     const redirect = NextResponse.redirect(new URL("/giris", request.url));
     response.cookies.getAll().forEach((cookie) => redirect.cookies.set(cookie));
     Object.entries(authHeaders).forEach(([key, value]) => redirect.headers.set(key, value));

@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { getSessionProfile, homeFor } from "@/lib/auth";
+import { LOGIN_MESSAGES } from "@/lib/login";
 import { LoginForm } from "./login-form";
 
 export default async function LoginPage({ searchParams }: PageProps<"/giris">) {
@@ -7,7 +8,7 @@ export default async function LoginPage({ searchParams }: PageProps<"/giris">) {
   if (profile) redirect(homeFor(profile.role));
 
   const { hata } = await searchParams;
-  const initialError = hata === "pasif" ? "Hesabınız pasif. Yöneticinize başvurun." : undefined;
+  const initialError = hata === "pasif" ? LOGIN_MESSAGES.INACTIVE : undefined;
 
   return (
     <main className="flex flex-1 items-center justify-center bg-zinc-50 px-4 py-10">

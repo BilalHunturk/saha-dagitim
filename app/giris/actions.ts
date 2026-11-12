@@ -1,43 +1,34 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { homeFor, loadSessionState } from "@/lib/auth";
-import { normalizePhone, phoneToEmail } from "@/lib/phone";
+import { homeFor, loadSessionState, signOutThisDevice } from "@/lib/auth";
+import { LOGIN_MESSAGES } from "@/lib/login";
 import { createClient } from "@/lib/supabase/server";
 
-// A "use server" file may export only async functions, so these stay module-private.
-const INVALID_PHONE = "Telefon numarası geçersiz";
-const WRONG_CREDENTIALS = "Telefon veya şifre hatalı";
-const INACTIVE = "Hesabınız pasif. Yöneticinize başvurun.";
+/**
+ * Second half of the login. The password sign-in runs in the browser (so the auth server
+ * sees the user's own IP); this action then reads the new cookie session and sends the user
+ * to their home page. A transient error keeps the session and asks the user to retry.
+ */
+export async function completeLogin(): Promise<{ error?: string }> {
+  const state = await loadSessionState(await createClient());
 
-export async function login(
-  _prev: { error?: string },
-  formData: FormData,
-): Promise<{ error?: string }> {
-  const phone = normalizePhone(String(formData.get("phone") ?? ""));
-  if (!phone) return { error: INVALID_PHONE };
-
-  const password = String(formData.get("password") ?? "");
-  if (!password) return { error: WRONG_CREDENTIALS };
-
-  const supabase = await createClient();
-  const { error } = await supabase.auth.signInWithPassword({
-    email: phoneToEmail(phone),
-    password,
-  });
-  if (error) return { error: WRONG_CREDENTIALS };
-
-  const state = await loadSessionState(supabase);
-  if (state.status !== "ok") {
-    await supabase.auth.signOut();
-    return { error: state.status === "inactive" ? INACTIVE : WRONG_CREDENTIALS };
+  switch (state.status) {
+    case "ok":
+      redirect(homeFor(state.profile.role));
+    case "inactive":
+      await signOutThisDevice();
+      return { error: LOGIN_MESSAGES.INACTIVE };
+    case "no-profile":
+      await signOutThisDevice();
+      return { error: LOGIN_MESSAGES.WRONG_CREDENTIALS };
+    case "signed-out":
+    case "error":
+      return { error: LOGIN_MESSAGES.CONNECTION };
   }
-
-  redirect(homeFor(state.profile.role));
 }
 
 export async function logout(): Promise<void> {
-  const supabase = await createClient();
-  await supabase.auth.signOut();
+  await signOutThisDevice();
   redirect("/giris");
 }
