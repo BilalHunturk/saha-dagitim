@@ -73,7 +73,9 @@ const browser = await chromium.launch({
   headless: process.env.HEADED ? false : true,
   args: ["--enable-unsafe-swiftshader", "--use-angle=swiftshader"],
 });
-const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+// 1600px wide: since Task 6 the board has a 300px people column at lg, and the drawing
+// coordinates below need a map at least ~900px wide at zoom 14. The layout check still uses 1280.
+const page = await browser.newPage({ viewport: { width: 1600, height: 800 } });
 page.on("pageerror", (e) => console.log("pageerror:", e.message));
 
 /** Rendered feature count on the given map layers. */
