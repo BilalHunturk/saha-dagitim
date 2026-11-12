@@ -4,6 +4,7 @@ import type { Map as MapLibreMap } from "maplibre-gl";
 import type { HexColor, TerraDraw, TerraDrawPolygonMode, TerraDrawSelectMode } from "terra-draw";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { validatePolygon } from "@/lib/geo";
+import { LOGIN_MESSAGES } from "@/lib/login";
 import type { Zone } from "@/lib/types";
 import { archiveZone, saveZone } from "./zone-actions";
 
@@ -66,6 +67,20 @@ function selectStyles(color: HexColor) {
     midPointWidth: 4,
     midPointOutlineWidth: 2,
   };
+}
+
+/**
+ * Runs a server action and turns a rejection (network drop, timeout, session check failed) into an
+ * ordinary `{ ok: false }` result. Uncaught, it would reach the error boundary, which replaces the
+ * board and loses the drawing and the form.
+ */
+async function callAction<R extends { ok: boolean }>(action: () => Promise<R>): Promise<R | { ok: false; error: string }> {
+  try {
+    return await action();
+  } catch (e) {
+    console.error("zone action failed", e);
+    return { ok: false, error: LOGIN_MESSAGES.CONNECTION };
+  }
 }
 
 /**
@@ -184,13 +199,15 @@ export function ZoneEditor({ map, target, onClose }: Props) {
       return;
     }
     startTransition(async () => {
-      const result = await saveZone({
-        id: editing?.id ?? null,
-        name,
-        color,
-        note: note.trim() || null,
-        geojson: polygon.polygon,
-      });
+      const result = await callAction(() =>
+        saveZone({
+          id: editing?.id ?? null,
+          name,
+          color,
+          note: note.trim() || null,
+          geojson: polygon.polygon,
+        }),
+      );
       if (result.ok) onClose(result.id);
       else setError(result.error);
     });
@@ -200,7 +217,7 @@ export function ZoneEditor({ map, target, onClose }: Props) {
     if (!editing) return;
     setError(null);
     startTransition(async () => {
-      const result = await archiveZone(editing.id);
+      const result = await callAction(() => archiveZone(editing.id));
       if (result.ok) onClose(null);
       else {
         setConfirmArchive(false);

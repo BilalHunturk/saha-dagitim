@@ -1,5 +1,6 @@
 // Browser check of the admin map (/yonetim): draw, persist, edit a vertex, switch basemap,
-// self-intersecting polygon error, archive, and layout at 1280px / 375px.
+// self-intersecting polygon error, a save whose action request fails (network drop), archive,
+// and layout at 1280px / 375px.
 //
 // Needs: local Supabase running, `next dev` on BASE_URL (default http://localhost:3100), the
 // local admin (LOCAL_ADMIN_PHONE / LOCAL_ADMIN_PASSWORD in .env.local) and Google Chrome.
@@ -139,6 +140,15 @@ const BOWTIE = [
   [32.852, 39.929],
 ];
 
+/** Aborts (like a dropped connection) every server-action POST while `on`. */
+const isAction = (route) => route.request().method() === "POST" && !!route.request().headers()["next-action"];
+const abortActions = (route) => (isAction(route) ? route.abort("failed") : route.fallback());
+const boardUrl = (url) => url.pathname === "/yonetim"; // one function, so unroute matches it
+async function failActions(on) {
+  if (on) await page.route(boardUrl, abortActions);
+  else await page.unroute(boardUrl, abortActions);
+}
+
 async function drawPolygon(points) {
   await page.getByRole("button", { name: "Yeni bölge" }).click();
   await page.getByText("Haritaya tıklayarak köşeleri ekleyin").waitFor();
@@ -169,10 +179,32 @@ try {
   await page.getByRole("radio", { name: "Renk #16a34a" }).click();
   await page.getByLabel("Not").fill("deneme notu");
   await page.screenshot({ path: join(SHOTS, "02-form.png") });
+
+  // --- A failed action request (network drop) keeps the board and the drawing -----------------
+  const drawnBefore = await rendered(await drawLayers());
+  await failActions(true);
+  await page.getByRole("button", { name: "Kaydet" }).click();
+  const netAlert = page.locator("section[aria-label] [role=alert]", { hasText: "Bağlantı sorunu. Lütfen tekrar deneyin." });
+  await netAlert.waitFor({ timeout: 15000 });
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: join(SHOTS, "02b-save-network-error.png") });
+  check(
+    "save with a failed action request: board stays, error shown, drawing and form kept, nothing stored",
+    (await page.getByRole("complementary", { name: "Bölgeler paneli" }).isVisible()) &&
+      (await page.locator(".maplibregl-canvas").isVisible()) &&
+      drawnBefore > 0 &&
+      (await rendered(await drawLayers())) === drawnBefore &&
+      (await page.getByLabel("Bölge adı").inputValue()) === "E2E Kare" &&
+      (await page.getByLabel("Not").inputValue()) === "deneme notu" &&
+      (await e2eZones()).length === 0,
+    `drawn ${drawnBefore} -> ${await rendered(await drawLayers())}`,
+  );
+  await failActions(false);
+  // Retry once the connection is back.
   await page.getByRole("button", { name: "Kaydet" }).click();
   await page.locator("[data-zone-id]", { hasText: "E2E Kare" }).waitFor({ timeout: 15000 });
   let rows = await e2eZones();
-  check("saved zone is in the database", rows.length === 1 && rows[0].name === "E2E Kare");
+  check("saved zone is in the database (retry after the failure)", rows.length === 1 && rows[0].name === "E2E Kare");
   const zoneId = rows[0]?.id;
 
   await page.reload();

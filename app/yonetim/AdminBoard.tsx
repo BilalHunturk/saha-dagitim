@@ -19,21 +19,24 @@ import { BaseMap } from "@/components/map/BaseMap";
 import { BasemapToggle, useStoredBasemap } from "@/components/map/BasemapToggle";
 import { applyAssignmentOp, resolveDrop, zonesOfWorker, type AssignmentOp, type DropIntent } from "@/lib/assignments";
 import { polygonsBounds } from "@/lib/geo";
+import { LOGIN_MESSAGES } from "@/lib/login";
 import type { Assignment, Profile, Zone } from "@/lib/types";
 import { AssignDialog, ZonePicker } from "./AssignDialog";
 import { assignWorker, moveWorker, unassignWorker } from "./assignment-actions";
 import { AssignmentChip } from "./AssignmentChip";
 import {
   ANNOUNCEMENTS,
-  DRAG_ACTIVATION,
   MAP_DROP_ID,
+  MOUSE_DRAG_ACTIVATION,
   MousePenSensor,
   SCREEN_READER_INSTRUCTIONS,
+  TOUCH_DRAG_ACTIVATION,
   pointerPosition,
   zoneIdFromDropId,
   type DragData,
 } from "./dnd";
 import { PeoplePanel } from "./PeoplePanel";
+import { usePeopleColumn } from "./usePeopleColumn";
 import { ZoneEditor, type ZoneEditorTarget } from "./ZoneEditor";
 import { ZONE_LAYER_IDS, ZoneLayer, ensureZoneLayers } from "./ZoneLayer";
 import { ZoneList } from "./ZoneList";
@@ -51,6 +54,7 @@ export function AdminBoard({ zones, people, assignments }: Props) {
   const [editor, setEditor] = useState<Editor>(null);
   const [panelOpen, setPanelOpen] = useState(true);
   const [tab, setTab] = useState<Tab>("zones");
+  const [peopleColumn, setPeopleColumn] = usePeopleColumn();
 
   // Assignments with in-flight changes applied. When a change's transition ends, React drops the
   // optimistic layer: on success the revalidated props already contain it, on failure it rolls back.
@@ -97,12 +101,21 @@ export function AdminBoard({ zones, people, assignments }: Props) {
       setError(null);
       startTransition(async () => {
         addOptimistic(op);
-        const result =
-          op.kind === "assign"
-            ? await assignWorker(op.workerId, op.zoneId)
-            : op.kind === "unassign"
-              ? await unassignWorker(op.workerId, op.zoneId)
-              : await moveWorker(op.workerId, op.fromZoneId, op.toZoneId);
+        // A rejected action (network drop, timeout, session check failed) must not reach the error
+        // boundary, which would replace the whole board. It is shown like any other failure; the
+        // optimistic change is dropped when the transition ends.
+        let result: { ok: true } | { ok: false; error: string };
+        try {
+          result =
+            op.kind === "assign"
+              ? await assignWorker(op.workerId, op.zoneId)
+              : op.kind === "unassign"
+                ? await unassignWorker(op.workerId, op.zoneId)
+                : await moveWorker(op.workerId, op.fromZoneId, op.toZoneId);
+        } catch (e) {
+          console.error("assignment action failed", e);
+          result = { ok: false, error: LOGIN_MESSAGES.CONNECTION };
+        }
         if (!result.ok) setError(result.error);
       });
     },
@@ -126,8 +139,8 @@ export function AdminBoard({ zones, people, assignments }: Props) {
   // ---- Drag and drop ------------------------------------------------------------------------
 
   const sensors = useSensors(
-    useSensor(MousePenSensor, { activationConstraint: DRAG_ACTIVATION }),
-    useSensor(TouchSensor, { activationConstraint: DRAG_ACTIVATION }),
+    useSensor(MousePenSensor, { activationConstraint: MOUSE_DRAG_ACTIVATION }),
+    useSensor(TouchSensor, { activationConstraint: TOUCH_DRAG_ACTIVATION }),
   );
 
   /**
@@ -240,7 +253,15 @@ export function AdminBoard({ zones, people, assignments }: Props) {
           md: the panel column (tabs + open tab) on the left, map on the right.
           lg: zones on the left, map, people on the right; no tabs.
         */}
-        <div className="absolute inset-0 grid grid-cols-1 grid-rows-[minmax(0,1fr)_auto_auto] md:grid-cols-[360px_minmax(0,1fr)] md:grid-rows-[auto_minmax(0,1fr)] lg:grid-cols-[360px_minmax(0,1fr)_300px] lg:grid-rows-[minmax(0,1fr)]">
+        <div
+          className={`absolute inset-0 grid grid-cols-1 grid-rows-[minmax(0,1fr)_auto_auto] md:grid-cols-[360px_minmax(0,1fr)] md:grid-rows-[auto_minmax(0,1fr)] lg:grid-rows-[minmax(0,1fr)] ${
+            peopleColumn === "open"
+              ? "lg:grid-cols-[360px_minmax(0,1fr)_300px]"
+              : peopleColumn === "closed"
+                ? "lg:grid-cols-[360px_minmax(0,1fr)]"
+                : "lg:grid-cols-[360px_minmax(0,1fr)] xl:grid-cols-[360px_minmax(0,1fr)_300px]"
+          }`}
+        >
           <div
             className="row-start-2 flex border-t border-zinc-200 bg-white md:col-start-1 md:row-start-1 md:border-t-0 md:border-r lg:hidden"
             aria-label="Panel sekmeleri"
@@ -311,14 +332,29 @@ export function AdminBoard({ zones, people, assignments }: Props) {
           </aside>
 
           <aside
+            id="people-column"
             aria-label="Kişiler paneli"
             className={`row-start-3 flex max-h-[40dvh] min-h-0 flex-col border-t border-zinc-200 bg-zinc-50 md:col-start-1 md:row-start-2 md:max-h-none md:border-t-0 md:border-r lg:col-start-3 lg:row-start-1 lg:border-r-0 lg:border-l ${
               tab === "people" ? "" : "max-lg:hidden"
-            }`}
+            } ${peopleColumn === "open" ? "" : peopleColumn === "closed" ? "lg:hidden" : "lg:max-xl:hidden"}`}
           >
-            <h2 className="hidden border-b border-zinc-200 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-900 lg:block">
-              Kişiler <span className="font-normal text-zinc-500">({activePeople.length})</span>
-            </h2>
+            {/* Hidden with CSS, not unmounted, so the search and the filter survive a collapse. */}
+            <div className="hidden items-center border-b border-zinc-200 bg-white py-1.5 pr-2 pl-4 lg:flex">
+              <h2 className="flex-1 text-sm font-semibold text-zinc-900">
+                Kişiler <span className="font-normal text-zinc-500">({activePeople.length})</span>
+              </h2>
+              <button
+                type="button"
+                onClick={() => setPeopleColumn(false)}
+                aria-controls="people-column"
+                aria-expanded
+                aria-label="Kişiler sütununu gizle"
+                title="Haritaya yer açmak için kişiler sütununu gizle"
+                className="rounded-md px-2 py-1 text-sm font-medium text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900"
+              >
+                Gizle <span aria-hidden>▸</span>
+              </button>
+            </div>
             <div className={`flex min-h-0 flex-1 flex-col ${collapsed}`}>
               <PeoplePanel people={people} zones={zones} assignments={optimistic} onPick={setPickWorkerId} />
             </div>
@@ -330,6 +366,19 @@ export function AdminBoard({ zones, people, assignments }: Props) {
           >
             <BaseMap basemap={basemap} onReady={setMap} onStyleReload={ensureZoneLayers} className="h-full w-full">
               <BasemapToggle value={basemap} onChange={setBasemap} className="absolute top-3 left-3 z-10" />
+              {/* lg+ only: brings the collapsed people column back (left of the zoom buttons). */}
+              <button
+                type="button"
+                onClick={() => setPeopleColumn(true)}
+                aria-controls="people-column"
+                aria-expanded={false}
+                aria-label="Kişiler sütununu göster"
+                className={`absolute top-3 right-12 z-10 items-center gap-1 rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-zinc-800 shadow-md ring-1 ring-black/10 hover:bg-zinc-100 ${
+                  peopleColumn === "open" ? "hidden" : peopleColumn === "closed" ? "hidden lg:inline-flex" : "hidden lg:max-xl:inline-flex"
+                }`}
+              >
+                <span aria-hidden>◂</span> Kişiler <span className="font-normal text-zinc-500">({activePeople.length})</span>
+              </button>
               {map && (
                 <ZoneLayer
                   map={map}

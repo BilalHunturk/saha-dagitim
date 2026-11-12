@@ -93,11 +93,13 @@ async function center(locator) {
   return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
 }
 
-/** Press, hold past the 150 ms activation delay, move in steps, release. */
+/**
+ * A plain mouse drag: press and move straight away, in steps, then release. No pause after the
+ * press: a mouse drag must start on movement alone (the 150 ms hold is for touch only).
+ */
 async function drag(from, to) {
   await page.mouse.move(from.x, from.y);
   await page.mouse.down();
-  await page.waitForTimeout(250);
   const STEPS = 15;
   for (let i = 1; i <= STEPS; i++) {
     await page.mouse.move(from.x + ((to.x - from.x) * i) / STEPS, from.y + ((to.y - from.y) * i) / STEPS);
@@ -113,6 +115,23 @@ async function mapPoint(lngLat) {
   const box = await page.locator(".maplibregl-canvas").boundingBox();
   const p = await page.evaluate((ll) => window.__sahaMap.project(ll), lngLat);
   return { x: box.x + p.x, y: box.y + p.y };
+}
+
+/** Rendered features on the terra-draw layers (everything that is not a basemap or zone layer). */
+const renderedDraw = () =>
+  page.evaluate(() => {
+    const m = window.__sahaMap;
+    const layers = m.getStyle().layers.map((l) => l.id).filter((id) => !id.startsWith("basemap-") && !id.startsWith("zones-"));
+    return layers.length ? m.queryRenderedFeatures({ layers }).length : 0;
+  });
+
+/** Aborts (like a dropped connection) every server-action POST while `on`. */
+const isAction = (route) => route.request().method() === "POST" && !!route.request().headers()["next-action"];
+const abortActions = (route) => (isAction(route) ? route.abort("failed") : route.fallback());
+const boardUrl = (url) => url.pathname === "/yonetim"; // one function, so unroute matches it
+async function failActions(on) {
+  if (on) await page.route(boardUrl, abortActions);
+  else await page.unroute(boardUrl, abortActions);
 }
 
 const centroid = (polygon) => {
@@ -257,7 +276,6 @@ try {
   const from = await center(row(zeynep));
   await page.mouse.move(from.x, from.y);
   await page.mouse.down();
-  await page.waitForTimeout(250);
   for (let i = 1; i <= 15; i++) {
     await page.mouse.move(from.x + ((target.x - from.x) * i) / 15, from.y + ((target.y - from.y) * i) / 15);
     await page.waitForTimeout(16);
@@ -359,6 +377,98 @@ try {
   );
   await cleanupTempZone();
 
+  // --- 7b. A failed action request (network drop) during an in-progress drawing ---------------------
+  // The board must stay (no error page), the strip must say so, the optimistic chip must roll back,
+  // and the half-drawn zone must still be on the map.
+  await gotoBoard();
+  await page.evaluate((c) => window.__sahaMap.jumpTo({ center: c, zoom: 14 }), kc);
+  await waitMapIdle();
+  await page.getByRole("button", { name: "Yeni bölge" }).click();
+  await page.getByText("Haritaya tıklayarak köşeleri ekleyin").waitFor();
+  const cv = await page.locator(".maplibregl-canvas").boundingBox();
+  for (const [dx, dy] of [[-80, -60], [80, -60], [80, 60]]) {
+    const x = cv.x + cv.width / 2 + dx;
+    const y = cv.y + cv.height / 2 + dy;
+    await page.mouse.move(x, y);
+    await page.waitForTimeout(80);
+    await page.mouse.click(x, y);
+    await page.waitForTimeout(250);
+  }
+  const drawnBefore = await renderedDraw();
+  await failActions(true);
+  await row(mehmet).locator("button").click();
+  await page.getByRole("dialog", { name: "Bölgeye ata" }).getByRole("button", { name: /Kızılay/ }).click();
+  const netStrip = page.locator("[role=alert]", { hasText: "Bağlantı sorunu. Lütfen tekrar deneyin." });
+  await netStrip.waitFor({ timeout: 10000 });
+  await page.waitForTimeout(800);
+  await page.screenshot({ path: join(SHOTS, "a04b-network-error.png") });
+  const drawnAfter = await renderedDraw();
+  check(
+    "failed action request: board stays, error strip shown, rolled back, drawing kept",
+    (await page.getByRole("complementary", { name: "Bölgeler paneli" }).isVisible()) &&
+      (await page.getByText("Haritaya tıklayarak köşeleri ekleyin").isVisible()) &&
+      drawnBefore > 0 && drawnAfter === drawnBefore &&
+      (await chip(kizilay, mehmet).count()) === 0 &&
+      (await row(mehmet).textContent()).includes("Atanmadı") &&
+      (await activeZonesOf(mehmet)).length === 0,
+    `drawn ${drawnBefore} -> ${drawnAfter}`,
+  );
+  await failActions(false);
+  // The drawing can still be finished after the failure.
+  {
+    const x = cv.x + cv.width / 2 - 80;
+    const y = cv.y + cv.height / 2 + 60;
+    await page.mouse.click(x, y);
+    await page.waitForTimeout(250);
+    await page.mouse.click(cv.x + cv.width / 2 - 80, cv.y + cv.height / 2 - 60);
+    await page.waitForTimeout(250);
+  }
+  check("drawing can be finished after the failed request", await page.getByLabel("Bölge adı").isVisible());
+  await page.getByRole("button", { name: "Vazgeç" }).click();
+
+  // --- 7c. Collapsible people column (lg+) ---------------------------------------------------------
+  const peopleAside = page.getByRole("complementary", { name: "Kişiler paneli" });
+  const hideBtn = page.getByRole("button", { name: "Kişiler sütununu gizle" });
+  const showBtn = page.getByRole("button", { name: "Kişiler sütununu göster" });
+  const canvasW = async () => (await page.locator(".maplibregl-canvas").boundingBox()).width;
+  await page.evaluate(() => localStorage.removeItem("saha.peopleColumn"));
+  await gotoBoard();
+  const wOpen = await canvasW();
+  check("1280px: people column open by default", (await peopleAside.isVisible()) && !(await showBtn.isVisible()));
+  await hideBtn.click();
+  await page.waitForTimeout(500);
+  const wClosed = await canvasW();
+  check(
+    "hiding the people column widens the map",
+    !(await peopleAside.isVisible()) && (await showBtn.isVisible()) && wClosed >= wOpen + 290,
+    `${Math.round(wOpen)} -> ${Math.round(wClosed)}`,
+  );
+  await gotoBoard();
+  check("collapsed state is remembered after reload", !(await peopleAside.isVisible()) && (await showBtn.isVisible()));
+  await showBtn.click();
+  await row(ayse).waitFor({ state: "visible" });
+  check("reopening shows the people column again", await peopleAside.isVisible());
+
+  await page.evaluate(() => localStorage.removeItem("saha.peopleColumn"));
+  await page.setViewportSize({ width: 1100, height: 800 });
+  await gotoBoard();
+  const w1100 = await canvasW();
+  await page.screenshot({ path: join(SHOTS, "a07-1100-collapsed.png") });
+  check(
+    "1100px: people column collapsed by default, map gets the room",
+    !(await peopleAside.isVisible()) && (await showBtn.isVisible()) && w1100 >= 1100 - 360 - 2,
+    `map w=${Math.round(w1100)}`,
+  );
+  await showBtn.click();
+  await row(zeynep).locator("button").click();
+  const picker1100 = page.getByRole("dialog", { name: "Bölgeye ata" });
+  await picker1100.waitFor({ timeout: 5000 });
+  check("1100px: after reopening, the 'Bölgeye ata' picker is reachable", await picker1100.isVisible());
+  await page.screenshot({ path: join(SHOTS, "a08-1100-open.png") });
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => localStorage.removeItem("saha.peopleColumn"));
+  await page.setViewportSize({ width: 1280, height: 800 });
+
   // --- 8. Phone (375px): tabs + "Bölgeye ata" picker ------------------------------------------------------
   await page.setViewportSize({ width: 375, height: 812 });
   await gotoBoard();
@@ -397,6 +507,7 @@ try {
   check("unexpected error", false, e.message);
   await page.screenshot({ path: join(SHOTS, "a-error.png") }).catch(() => {});
 } finally {
+  await page.evaluate(() => localStorage.removeItem("saha.peopleColumn")).catch(() => {});
   await browser.close();
   await cleanupTempZone();
 }

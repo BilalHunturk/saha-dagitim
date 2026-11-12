@@ -15,8 +15,15 @@ export const zoneDropId = (zoneId: string) => `zone:${zoneId}`;
 export const zoneIdFromDropId = (id: unknown) =>
   typeof id === "string" && id.startsWith("zone:") ? id.slice("zone:".length) : null;
 
-/** Hold time before a drag starts, on both mouse and touch (lets a tap open the picker / a swipe scroll). */
-export const DRAG_ACTIVATION = { delay: 150, tolerance: 5 } as const;
+/**
+ * Mouse and pen: a drag starts once the pointer has moved 5 px, so press-and-drag works at once and
+ * a click (no movement) still opens the "Bölgeye ata" picker. A delay constraint here would cancel
+ * every drag that moves before the delay ends.
+ */
+export const MOUSE_DRAG_ACTIVATION = { distance: 5 } as const;
+
+/** Touch: hold 150 ms before a drag starts, so a tap opens the picker and a swipe scrolls the list. */
+export const TOUCH_DRAG_ACTIVATION = { delay: 150, tolerance: 5 } as const;
 
 /**
  * PointerSensor for mouse and pen only. Touch is left to TouchSensor, which can stop the page from
