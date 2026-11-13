@@ -387,6 +387,7 @@ export function AdminBoard({ zones, people, assignments }: Props) {
                   selectedId={editZone?.id ?? mapDropZoneId}
                   hiddenId={editZone?.id ?? null}
                   onZoneClick={editor ? null : selectZone}
+                  peopleByZone={chipsByZone}
                 />
               )}
             </BaseMap>
